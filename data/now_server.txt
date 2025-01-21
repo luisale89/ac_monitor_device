@@ -1,0 +1,5 @@
+{
+    "server_serial":"ffffffffffff",
+    "server_mac":"FF:FF:FF:FF:FF:FF",
+    "server_chan":1
+}
