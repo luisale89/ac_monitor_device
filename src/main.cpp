@@ -686,11 +686,11 @@ void update_IO()
   alarm_led_animation(alarm_code_state);
   // set alarm relay state.
 
-  if (alarm_code_state == NORMAL && adc_readed) {
-    digitalWrite(ALARM_RELAY, HIGH); //normally open contacts
+  if (alarm_code_state == NORMAL) {
+    digitalWrite(ALARM_RELAY, LOW); //normally closed contacts
     //TODO: Implement a timer that prevent short-cycling the compressor.
   } else {
-    digitalWrite(ALARM_RELAY, LOW);
+    digitalWrite(ALARM_RELAY, HIGH);
   }
 
   return;
