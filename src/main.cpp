@@ -141,12 +141,12 @@ unsigned long lastNetworkLedBlink = 0;
 unsigned long lastAlarmLedBlink = 0;
 unsigned long lastNowBtnChange = 0;
 unsigned long lastAlarmBtnChange = 0;
-unsigned long lastAlarmRelayTurnOn = 0;
+unsigned long lastAlarmRelayTurnOff = 0;
 unsigned long lastSystemLog = 0;
 unsigned long lastSecondTick = 0;
 unsigned long lastADCReading = 0;
 const unsigned long SYSTEM_LOG_DELAY = 1000L; // 1 second.
-const unsigned long COMPRESSOR_SHORT_CYCLING_DELAY = 3L * 60000L; // 3 minutes for compressor short cycling prevention.
+const unsigned long COMPRESSOR_SHORT_CYCLING_DELAY = 1L * 60000L; // 1 minute for compressor short cycling prevention.
 const unsigned long ESP_NOW_POST_INTERVAL = 750L; // 0.75 seconds after receiving data from the server.
 const unsigned long ESP_NOW_WAIT_SERVER_MSG = 1L * 60000L; // 1 minute for server message to arrive before PAIRING mode is set.
 const unsigned long ESP_NOW_WAIT_PAIR_RESPONSE = 2000; // Interval to wait for pairing response from server
@@ -162,8 +162,8 @@ int led_brightness = 0;
 int led_fade_amount = 5;
 bool network_led_state = false;
 bool alarm_led_state = false;
-bool adc_readed = false;
 uint16_t alarm_led_count = 0;
+bool adc_readed = false;
 
 //logger function
 void debug_logger(const char *message) {
@@ -241,68 +241,57 @@ void network_led_animation(LedAnimationStyle animation_style) {
 // network led animations...
 void alarm_led_animation(AlarmCode alarm_code) {
 // enum AlarmCode {NORMAL, LOW_P, HIGH_P, AMP_LIMIT};
-  currentMillis = millis();
 
-  if (currentMillis - lastAlarmLedBlink >= 250) {
-    lastAlarmLedBlink = currentMillis;
+  if (millis() - lastAlarmLedBlink >= 200) {
+    lastAlarmLedBlink = millis();
 
     if (alarm_led_state == false) {
       alarm_led_state = true;
       alarm_led_count ++;
+      if (alarm_led_count > 5) {
+        alarm_led_count = 0;
+      }
     } else {
       alarm_led_state = false;
-    }
-
-    if (alarm_led_count > 5) {
-      alarm_led_count = 0;
     }
 
     switch (alarm_code)
     {
 
     case NORMAL:
-      digitalWrite(ALARM_LED, false);
+      digitalWrite(ALARM_LED, true); // allways on..
       alarm_led_count = 0;
-
-      break;
-
-    case FROM_APP:
-    // Blink 2 times
-
-      if (alarm_led_count > 1) {
-        alarm_led_state = false;
-      }
-
-      digitalWrite(ALARM_LED, alarm_led_state);
       break;
 
     case LOW_P:
-    // Blink 3 times
-
-      if (alarm_led_count > 2) {
+    // Blink 2 times
+      if (alarm_led_count >= 1) {
         alarm_led_state = false;
       }
-
       digitalWrite(ALARM_LED, alarm_led_state);
       break;
 
     case HIGH_P:
-    // Blink 4 times
-
-      if (alarm_led_count > 3) {
+    // Blink 3 times
+      if (alarm_led_count >= 2) {
         alarm_led_state = false;
       }
-
       digitalWrite(ALARM_LED, alarm_led_state);
       break;
 
     case AMP_LIMIT:
-    // Blink 5 times
-
-      if (alarm_led_count > 4) {
+    // Blink 4 times
+      if (alarm_led_count >= 3) {
         alarm_led_state = false;
       }
+      digitalWrite(ALARM_LED, alarm_led_state);
+      break;
 
+    case FROM_APP:
+    // Blink 5 times
+      if (alarm_led_count >= 4) {
+        alarm_led_state = false;
+      }
       digitalWrite(ALARM_LED, alarm_led_state);
       break;
     
@@ -570,7 +559,6 @@ void update_adc_readings(void *pvParameters) {
     }
 
     cc_rms = sqrt(cc_sum_square/cc_readings_count) * TC_FACTOR; //
-    compressor_state = cc_rms > 2 ? true : false; // 2 amp threshold. Compressor state (true|false)
 
     if (sensor_readings_count < 5) {
       current_readings[sensor_readings_count] = cc_rms;
@@ -582,6 +570,7 @@ void update_adc_readings(void *pvParameters) {
         cc_rms_sum += current_readings[i];
       }
       current_readings[0] = cc_rms_sum / 5; // AVG current value.
+      compressor_state = current_readings[0] > 1 ? true : false; // 1 amp threshold. Compressor state (true|false)
       adc_readed = true;
     }
 
@@ -607,8 +596,14 @@ void update_alarm_state() {
     return;
   }
 
+  if (settings_data.monitor_alarm_rstrt == true) {
+    alarm_code_state = NORMAL;
+    settings_data.monitor_alarm_rstrt = false;
+  }
+
   if (settings_data.monitor_remote_alarm == true) {
     alarm_code_state = FROM_APP;
+    settings_data.monitor_remote_alarm = false;
     // alarm generated on the app..
 
   } else if (current_readings[0] >= 60) { //TODO -> install a potentiometer to regulate the amp. limits.
@@ -625,7 +620,10 @@ void update_alarm_state() {
   }
 
   if (prev_alarm_code != alarm_code_state) {
-    // save state in fs.
+    /*if alarm != NORMAL, the alarm relay will be turned off.. update time variable for short_cycling protection.*/
+    if (prev_alarm_code == NORMAL) {
+      lastAlarmRelayTurnOff = millis();
+    }
     prev_alarm_code = alarm_code_state;
 
     info_logger("Saving new server data in the fs.");
@@ -636,6 +634,7 @@ void update_alarm_state() {
     json["alarm"] = alarm_code_state;
     //save json in filesystem.
     serializeJson(json, data);
+    // save state in fs.
     save_data_in_fs(data, "/alarm_state.txt");
   }
   
@@ -676,7 +675,6 @@ void update_IO()
   if (alarm_btn_state) { // if alarm-reset-button is pressed.
     //try to restart the fault code..
     alarm_code_state = NORMAL;
-    alarm_btn_state = false;
   }
 
   //- outputs.
@@ -687,10 +685,12 @@ void update_IO()
   // set alarm relay state.
 
   if (alarm_code_state == NORMAL) {
-    digitalWrite(ALARM_RELAY, LOW); //normally closed contacts
-    //TODO: Implement a timer that prevent short-cycling the compressor.
+    if (millis() - lastAlarmRelayTurnOff >= COMPRESSOR_SHORT_CYCLING_DELAY) {
+      digitalWrite(ALARM_RELAY, HIGH); // normally clossed contacts.
+    }
   } else {
-    digitalWrite(ALARM_RELAY, HIGH);
+    // abre el contacto del relé inmediatamente.
+    digitalWrite(ALARM_RELAY, LOW);
   }
 
   return;
@@ -886,11 +886,6 @@ void OnDataRecv(const uint8_t * mac_addr, const uint8_t *incomingData, int len) 
     info_logger("[esp-now] message of type DATA received");
     memcpy(&settings_data, incomingData, sizeof(settings_data));
     postEspnowFlag = true; // flag to send a response to the server.
-    //-
-    // simulates a press to the alarm_btn...
-    if (settings_data.monitor_alarm_rstrt) {
-      alarm_btn_state = true;
-    }
     //-
     break;
 
@@ -1213,6 +1208,7 @@ void setup() {
 
   //time var
   currentMillis = millis();
+  lastAlarmRelayTurnOff = currentMillis;
   info_logger("setup completed --!.");
   delay(500);
   // ***************** SETUP COMPLETED ************
